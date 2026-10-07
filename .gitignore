@@ -1,0 +1,15 @@
+build/
+bin/
+*.o
+*.dSYM/
+
+*.log
+.DS_Store
+
+.vscode/
+.idea/
+
+# задания
+/i-tasks.pdf
+/i-tasks-req.pdf
+/e-life*

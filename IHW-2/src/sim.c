@@ -8,7 +8,7 @@ Sim sim;
 
 static long base_ms;
 static unsigned rng_state;
-static pthread_t dispatcher_tid;
+static pthread_t dispatcher_tid, generator_tid;
 
 long now_ms(void)
 {
@@ -38,6 +38,9 @@ static const char *dir_name(Direction d)
 {
     return d == DIR_UP ? "up" : d == DIR_DOWN ? "down" : "nowhere";
 }
+
+#define BROKEN(...) \
+    do { sim.violations++; out_event("INVARIANT BROKEN: " __VA_ARGS__); } while (0)
 
 static Call *find_call(int floor, Direction dir)
 {
@@ -157,6 +160,8 @@ static int take_out(Elevator *e, int *ids)
             e->riders[kept++] = e->riders[i];
             continue;
         }
+        if (!e->doors)
+            BROKEN("passenger %d leaves elevator %d through closed doors", p->id, e->id);
         p->state = PS_DONE;
         p->elevator = -1;
         p->done_ms = now_ms();
@@ -182,6 +187,8 @@ static int take_in(Elevator *e, int *ids, int *left)
             (*left)++;
             continue;
         }
+        if (!e->doors)
+            BROKEN("passenger %d enters elevator %d through closed doors", p->id, e->id);
         p->state = PS_RIDING;
         p->elevator = e->id;
         p->boarded_ms = now_ms();
@@ -335,24 +342,92 @@ static void *dispatcher_thread(void *arg)
     return NULL;
 }
 
-static void add_passenger(int from, int to)
+static void *passenger_thread(void *arg)
 {
-    Passenger *p = &sim.passengers[sim.n_passengers];
+    Passenger *p = arg;
 
-    p->id = sim.n_passengers + 1;
-    p->from = from;
-    p->to = to;
-    p->dir = (to > from) ? DIR_UP : DIR_DOWN;
-    p->state = PS_WAITING;
-    p->elevator = -1;
-    p->appeared_ms = now_ms();
-    sig_init(&p->boarded);
-    sig_init(&p->arrived);
-    sim.n_passengers++;
+    sig_wait(&p->boarded);
+    if (!sim_running()) return NULL;
+    sig_wait(&p->arrived);
+    return NULL;
+}
 
-    out_event("passenger %d appears on floor %d and wants floor %d (%s)",
-              p->id, from, to, dir_name(p->dir));
-    if (!find_call(from, p->dir)) add_call(from, p->dir);
+static void *generator_thread(void *arg)
+{
+    (void)arg;
+
+    for (int i = 0; i < sim.cfg.passengers && sim_running(); i++) {
+        Passenger *p;
+        int gap, to;
+
+        pthread_mutex_lock(&sim.lock);
+        p = &sim.passengers[sim.n_passengers];
+        p->id = sim.n_passengers + 1;
+        p->from = rnd(1, sim.cfg.floors);
+        do { to = rnd(1, sim.cfg.floors); } while (to == p->from);
+        p->to = to;
+        p->dir = (to > p->from) ? DIR_UP : DIR_DOWN;
+        p->elevator = -1;
+        p->state = PS_WAITING;
+        p->appeared_ms = now_ms();
+        sig_init(&p->boarded);
+        sig_init(&p->arrived);
+        gap = rnd(sim.cfg.arrival_min_ms, sim.cfg.arrival_max_ms);
+        sim.n_passengers++;
+        if (!find_call(p->from, p->dir)) add_call(p->from, p->dir);
+        pthread_mutex_unlock(&sim.lock);
+
+        out_event("passenger %d appears on floor %d and wants floor %d (%s)",
+                  p->id, p->from, p->to, dir_name(p->dir));
+        pthread_create(&p->tid, NULL, passenger_thread, p);
+        sleep_ms(gap);
+    }
+    return NULL;
+}
+
+void sim_check(void)
+{
+    pthread_mutex_lock(&sim.lock);
+
+    for (int i = 0; i < sim.cfg.elevators; i++) {
+        const Elevator *e = &sim.elevators[i];
+        if (e->n_riders > sim.cfg.capacity)
+            BROKEN("elevator %d carries %d, capacity is %d", e->id, e->n_riders,
+                   sim.cfg.capacity);
+        if (e->state == ST_MOVING && e->doors)
+            BROKEN("elevator %d moves with open doors", e->id);
+        if (e->floor < 1 || e->floor > sim.cfg.floors)
+            BROKEN("elevator %d is on floor %d, outside the building", e->id, e->floor);
+    }
+
+    for (int i = 0; i < sim.n_passengers; i++) {
+        const Passenger *p = &sim.passengers[i];
+        int seen = 0, where = -1;
+
+        for (int j = 0; j < sim.cfg.elevators; j++)
+            for (int k = 0; k < sim.elevators[j].n_riders; k++)
+                if (sim.elevators[j].riders[k] == p->id) {
+                    seen++;
+                    where = sim.elevators[j].id;
+                }
+        if (p->state == PS_RIDING && seen != 1)
+            BROKEN("passenger %d rides but is found in %d cabins", p->id, seen);
+        if (p->state != PS_RIDING && seen != 0)
+            BROKEN("passenger %d does not ride but sits in a cabin", p->id);
+        if (p->state == PS_RIDING && where != p->elevator)
+            BROKEN("passenger %d thinks he is in elevator %d, he is in %d",
+                   p->id, p->elevator, where);
+    }
+
+    for (int i = 0; i < MAX_CALLS; i++) {
+        if (!sim.calls[i].active) continue;
+        for (int j = i + 1; j < MAX_CALLS; j++)
+            if (sim.calls[j].active && sim.calls[j].floor == sim.calls[i].floor &&
+                sim.calls[j].dir == sim.calls[i].dir)
+                BROKEN("two active calls on floor %d going %s", sim.calls[i].floor,
+                       dir_name(sim.calls[i].dir));
+    }
+    pthread_mutex_unlock(&sim.lock);
 }
 
 void sim_init(const Config *cfg)
@@ -377,14 +452,6 @@ void sim_init(const Config *cfg)
         e->state = ST_IDLE;
         sig_init(&e->work);
     }
-
-    for (int i = 0; i < cfg->passengers; i++) {
-        int from = rnd(1, cfg->floors), to;
-        do {
-            to = rnd(1, cfg->floors);
-        } while (to == from);
-        add_passenger(from, to);
-    }
 }
 
 void sim_start(void)
@@ -393,6 +460,7 @@ void sim_start(void)
         pthread_create(&sim.elevators[i].tid, NULL, elevator_thread,
                        &sim.elevators[i]);
     pthread_create(&dispatcher_tid, NULL, dispatcher_thread, NULL);
+    pthread_create(&generator_tid, NULL, generator_thread, NULL);
 }
 
 void sim_stop(void)
@@ -407,6 +475,19 @@ void sim_stop(void)
 
 void sim_join(void)
 {
+    int n;
+
+    pthread_join(generator_tid, NULL);
+
+    pthread_mutex_lock(&sim.lock);
+    n = sim.n_passengers;
+    pthread_mutex_unlock(&sim.lock);
+    for (int i = 0; i < n; i++) {
+        sig_post(&sim.passengers[i].boarded);
+        sig_post(&sim.passengers[i].arrived);
+    }
+    for (int i = 0; i < n; i++) pthread_join(sim.passengers[i].tid, NULL);
+
     for (int i = 0; i < sim.cfg.elevators; i++) pthread_join(sim.elevators[i].tid, NULL);
     pthread_join(dispatcher_tid, NULL);
 }

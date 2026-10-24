@@ -23,7 +23,10 @@ int main(int argc, char **argv)
     sim_init(&cfg);
     sim_start();
 
-    while (!sim_all_delivered()) sleep_ms(50);
+    while (!sim_all_delivered()) {
+        sim_check();
+        sleep_ms(sim.cfg.refresh_ms);
+    }
 
     sim_stop();
     sim_join();

@@ -104,6 +104,7 @@ void sim_stop(void);
 void sim_join(void);
 int  sim_running(void);
 int  sim_all_delivered(void);
+void sim_check(void);
 
 int  out_open(const char *log_path);
 int  out_log_fd(void);

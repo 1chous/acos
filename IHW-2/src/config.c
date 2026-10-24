@@ -70,8 +70,7 @@ static int set_option(Config *c, const char *raw, const char *val)
     char key[24];
     size_t i;
 
-    for (i = 0; raw[i] && i < sizeof(key) - 1; i++)
-        key[i] = (raw[i] == '-') ? '_' : raw[i];
+    for (i = 0; raw[i] && i < sizeof(key) - 1; i++) key[i] = (raw[i] == '-') ? '_' : raw[i];
     key[i] = '\0';
 
     if (!strcmp(key, "floors"))         return to_int(val, &c->floors);
@@ -131,8 +130,7 @@ int config_load_file(Config *c, const char *path)
         dprintf(2, "config: cannot open %s\n", path);
         return -1;
     }
-    while ((n = read(fd, buf + total, sizeof(buf) - 1 - (size_t)total)) > 0)
-        total += n;
+    while ((n = read(fd, buf + total, sizeof(buf) - 1 - (size_t)total)) > 0) total += n;
     close(fd);
     if (n < 0 || total == sizeof(buf) - 1) {
         dprintf(2, "config: cannot read %s, or it is too big\n", path);
@@ -154,8 +152,7 @@ int config_load_file(Config *c, const char *path)
 
 const char *config_arg_file(int argc, char **argv)
 {
-    for (int i = 1; i < argc - 1; i++)
-        if (!strcmp(argv[i], "--config")) return argv[i + 1];
+    for (int i = 1; i < argc - 1; i++) if (!strcmp(argv[i], "--config")) return argv[i + 1];
     return NULL;
 }
 
@@ -214,17 +211,16 @@ int config_check(Config *c)
 
 void config_dump(const Config *c, int fd)
 {
-    dprintf(fd, "building: %d floors, %d elevators, capacity %d, cabins start at",
+    dprintf(fd, "building: %d floors, %d elevators, capacity %d, start at",
             c->floors, c->elevators, c->capacity);
     for (int i = 0; i < c->elevators; i++) dprintf(fd, " %d", c->start_floor[i]);
-    dprintf(fd, "\npassengers: %d, one every %d..%d ms\n",
-            c->passengers, c->arrival_min_ms, c->arrival_max_ms);
-    dprintf(fd, "timings: travel %d, doors %d, boarding %d, alighting %d ms\n",
+    dprintf(fd, "\npassengers: %d, one every %d..%d ms\n", c->passengers,
+            c->arrival_min_ms, c->arrival_max_ms);
+    dprintf(fd, "timings ms: travel %d, doors %d, board %d, alight %d\n",
             c->travel_ms, c->door_ms, c->board_ms, c->alight_ms);
-    dprintf(fd, "run: strategy %s, seed %u, max_seconds %d, refresh %d ms, log %s\n",
-            c->strategy == STRAT_FCFS ? "fcfs" : "nearest",
-            c->seed, c->max_seconds, c->refresh_ms, c->log_path);
-    dprintf(fd, "threads talk through %s\n\n", sync_name());
+    dprintf(fd, "run: %s, seed %u, max_seconds %d, refresh %d ms, log %s, via %s\n\n",
+            c->strategy == STRAT_FCFS ? "fcfs" : "nearest", c->seed,
+            c->max_seconds, c->refresh_ms, c->log_path, sync_name());
 }
 
 void config_usage(const char *prog, int fd)
@@ -234,9 +230,8 @@ void config_usage(const char *prog, int fd)
 "  --floors N --elevators N --capacity N --start-floors \"1 5 9\"\n"
 "  --passengers N --arrival-min-ms N --arrival-max-ms N\n"
 "  --travel-ms N --door-ms N --board-ms N --alight-ms N\n"
-"  --strategy fcfs|nearest   --seed N (0 = from the clock)\n"
-"  --max-seconds N (0 = no limit)   --refresh-ms N   --plain   --log FILE\n\n"
-"Limits: floors 2..%d, elevators 1..%d, capacity 1..%d.\n"
-"Command line options override the config file.\n",
+"  --strategy fcfs|nearest --seed N --max-seconds N --refresh-ms N\n"
+"  --plain --log FILE\n\n"
+"Limits: floors 2..%d, elevators 1..%d, capacity 1..%d. Arguments win over the file.\n",
             prog, MAX_FLOORS, MAX_ELEVATORS, MAX_CAPACITY);
 }

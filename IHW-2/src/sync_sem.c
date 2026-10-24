@@ -22,8 +22,7 @@ void sig_init(Signal *s)
 
 void sig_wait(Signal *s)
 {
-    while (sem_wait(s->sem) != 0 && errno == EINTR)
-        ;
+    while (sem_wait(s->sem) != 0 && errno == EINTR) ;
 }
 
 void sig_post(Signal *s)

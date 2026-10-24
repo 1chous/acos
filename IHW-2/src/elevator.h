@@ -34,19 +34,13 @@ const char *sync_name(void);
 typedef enum { STRAT_FCFS, STRAT_NEAREST } Strategy;
 
 typedef struct {
-    int floors, elevators, capacity;
-    int start_floor[MAX_ELEVATORS];
-    int n_start;
-    int passengers;
+    int floors, elevators, capacity, passengers;
+    int start_floor[MAX_ELEVATORS], n_start;
     int arrival_min_ms, arrival_max_ms;
-    int travel_ms;
-    int door_ms;
-    int board_ms, alight_ms;
+    int travel_ms, door_ms, board_ms, alight_ms;
+    int max_seconds, refresh_ms, plain;
     Strategy strategy;
     unsigned seed;
-    int max_seconds;
-    int refresh_ms;
-    int plain;
     char log_path[256];
 } Config;
 
@@ -67,31 +61,24 @@ typedef enum {
 typedef enum { PS_WAITING, PS_RIDING, PS_DONE } PassengerState;
 
 typedef struct {
-    int id, from, to;
+    int id, from, to, elevator;
     Direction dir;
     PassengerState state;
-    int elevator;
     pthread_t tid;
-    Signal boarded;
-    Signal arrived;
+    Signal boarded, arrived;
     long appeared_ms, boarded_ms, done_ms;
 } Passenger;
 
 typedef struct {
-    int floor;
+    int floor, elevator, active;
     Direction dir;
-    int elevator;
-    int active;
 } Call;
 
 typedef struct {
-    int id, floor;
+    int id, floor, doors, n_riders, floors_passed;
+    int riders[MAX_CAPACITY];
     Direction dir;
     ElevatorState state;
-    int doors;
-    int riders[MAX_CAPACITY];
-    int n_riders;
-    int floors_passed;
     pthread_t tid;
     Signal work;
 } Elevator;
@@ -103,10 +90,24 @@ typedef struct {
     Passenger passengers[MAX_PASSENGERS];
     Call calls[MAX_CALLS];
     Signal new_call;
-    int n_passengers;
-    int delivered, refused_boardings, violations;
+    int n_passengers, delivered, refused_boardings, violations, running;
     long total_wait, max_wait, total_ride;
-    int running;
 } Sim;
+
+extern Sim sim;
+
+long now_ms(void);
+void sleep_ms(int ms);
+void sim_init(const Config *cfg);
+void sim_start(void);
+void sim_stop(void);
+void sim_join(void);
+int  sim_running(void);
+int  sim_all_delivered(void);
+
+int  out_open(const char *log_path);
+int  out_log_fd(void);
+void out_close(void);
+void out_event(const char *fmt, ...);
 
 #endif

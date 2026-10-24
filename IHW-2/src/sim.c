@@ -28,6 +28,8 @@ void sleep_ms(int ms)
     nanosleep(&ts, NULL);
 }
 
+// Own generator, not rand(): the same seed must give the same run.
+// Only called with the mutex held, so it needs no lock of its own.
 static int rnd(int lo, int hi)
 {
     rng_state = rng_state * 1103515245u + 12345u;
@@ -42,6 +44,8 @@ static const char *dir_name(Direction d)
 #define BROKEN(...) \
     do { sim.violations++; out_event("INVARIANT BROKEN: " __VA_ARGS__); } while (0)
 
+// Everything from here to sim_check reads or writes the shared state,
+// so all of it must be called with sim.lock already held.
 static Call *find_call(int floor, Direction dir)
 {
     for (int i = 0; i < MAX_CALLS; i++)
@@ -65,6 +69,8 @@ static void add_call(int floor, Direction dir)
     }
 }
 
+// Is there still a reason to keep going that way: somebody inside who
+// wants a floor over there, or a call that was given to this cabin.
 static int work_in_direction(const Elevator *e, Direction dir)
 {
     if (dir == DIR_NONE) return 0;
@@ -77,6 +83,7 @@ static int work_in_direction(const Elevator *e, Direction dir)
     return 0;
 }
 
+// the current direction is finished first, as the task requires
 static void pick_direction(Elevator *e)
 {
     if (work_in_direction(e, e->dir)) return;
@@ -86,6 +93,8 @@ static void pick_direction(Elevator *e)
     else e->dir = DIR_NONE;
 }
 
+// A call going our way is taken even if it belongs to another cabin,
+// as long as we have room - these are the calls on the way.
 static int should_stop(const Elevator *e)
 {
     for (int i = 0; i < e->n_riders; i++)
@@ -124,6 +133,8 @@ static int assigned_calls(int id)
     return n;
 }
 
+// Picks a cabin for a call. Already assigned calls add to the cost,
+// otherwise the first cabin takes everything and the rest stand idle.
 static int pick_elevator(const Call *call)
 {
     int best = -1, best_cost = 0;
@@ -173,6 +184,8 @@ static int take_out(Elevator *e, int *ids)
     return n;
 }
 
+// Whoever did not fit gets a fresh call right away, which is what the
+// task asks for. The caller posts the signals after unlocking.
 static int take_in(Elevator *e, int *ids, int *left)
 {
     int n = 0;
@@ -195,6 +208,7 @@ static int take_in(Elevator *e, int *ids, int *left)
         e->riders[e->n_riders++] = p->id;
         waited = p->boarded_ms - p->appeared_ms;
         sim.total_wait += waited;
+        sim.boarded_count++;
         if (waited > sim.max_wait) sim.max_wait = waited;
         ids[n++] = p->id;
     }
@@ -209,6 +223,9 @@ static int take_in(Elevator *e, int *ids, int *left)
     return n;
 }
 
+// One stop, phase by phase. Note the shape of every step: lock, change
+// the state, unlock, and only then sleep. Sleeping with the mutex held
+// would freeze every other thread for the whole door or travel time.
 static void serve_floor(Elevator *e)
 {
     int out_ids[MAX_CAPACITY], in_ids[MAX_PASSENGERS];
@@ -264,6 +281,7 @@ static void serve_floor(Elevator *e)
     pthread_mutex_unlock(&sim.lock);
 }
 
+// One thread per cabin.
 static void *elevator_thread(void *arg)
 {
     Elevator *e = arg;
@@ -283,6 +301,7 @@ static void *elevator_thread(void *arg)
             continue;
         }
         if (dir == DIR_NONE) {
+            // nothing to do: sleep instead of polling in a loop
             sig_wait(&e->work);
             continue;
         }
@@ -305,6 +324,8 @@ static void *elevator_thread(void *arg)
     return NULL;
 }
 
+// One thread for the dispatcher: sleeps until a passenger presses a
+// button, then hands out every call that has no cabin yet.
 static void *dispatcher_thread(void *arg)
 {
     (void)arg;
@@ -342,6 +363,9 @@ static void *dispatcher_thread(void *arg)
     return NULL;
 }
 
+// One thread per passenger. He only waits: first to be let in, then to
+// be delivered. Both waits happen without the mutex - falling asleep
+// while holding it would stop the cabin that is supposed to pick him up.
 static void *passenger_thread(void *arg)
 {
     Passenger *p = arg;
@@ -352,6 +376,9 @@ static void *passenger_thread(void *arg)
     return NULL;
 }
 
+// Passengers appear one by one. The whole structure is filled under the
+// mutex and only then counted in: a half-ready passenger must not be
+// visible to the cabins.
 static void *generator_thread(void *arg)
 {
     (void)arg;
@@ -361,6 +388,7 @@ static void *generator_thread(void *arg)
         int gap, to;
 
         pthread_mutex_lock(&sim.lock);
+        if (sim.draining) { pthread_mutex_unlock(&sim.lock); break; }
         p = &sim.passengers[sim.n_passengers];
         p->id = sim.n_passengers + 1;
         p->from = rnd(1, sim.cfg.floors);
@@ -385,6 +413,9 @@ static void *generator_thread(void *arg)
     return NULL;
 }
 
+// Four of the six invariants, checked on a snapshot of the world. The
+// other two live in take_in and take_out, because only there can a
+// passenger change where he is.
 void sim_check(void)
 {
     pthread_mutex_lock(&sim.lock);
@@ -463,6 +494,8 @@ void sim_start(void)
     pthread_create(&generator_tid, NULL, generator_thread, NULL);
 }
 
+// Almost every thread is asleep on a signal by now. Each one has to be
+// woken, or pthread_join below would wait for it forever.
 void sim_stop(void)
 {
     pthread_mutex_lock(&sim.lock);
@@ -492,6 +525,7 @@ void sim_join(void)
     pthread_join(dispatcher_tid, NULL);
 }
 
+// read under the mutex: another thread writes this flag
 int sim_running(void)
 {
     int r;
@@ -507,7 +541,19 @@ int sim_all_delivered(void)
     int done;
 
     pthread_mutex_lock(&sim.lock);
-    done = (sim.delivered >= sim.cfg.passengers);
+    if (sim.draining)
+        done = (sim.delivered >= sim.n_passengers);
+    else
+        done = (sim.delivered >= sim.cfg.passengers);
     pthread_mutex_unlock(&sim.lock);
     return done;
+}
+
+void sim_drain(void)
+{
+    pthread_mutex_lock(&sim.lock);
+    if (sim.draining) { pthread_mutex_unlock(&sim.lock); return; }
+    sim.draining = 1;
+    pthread_mutex_unlock(&sim.lock);
+    out_event("SIGUSR1: no more passengers, finishing with those in the building");
 }

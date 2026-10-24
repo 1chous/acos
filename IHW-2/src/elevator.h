@@ -1,6 +1,12 @@
 #ifndef ELEVATOR_H
 #define ELEVATOR_H
 
+// Elevator group simulation, task 29, multithreaded version.
+// Every entity with behaviour runs in its own thread: a passenger, a
+// cabin, the dispatcher. They share the world under one mutex and wake
+// each other with signals. Floors are numbered from 1, the arrays that
+// hold them from 0. Time is real time in milliseconds.
+
 #include <pthread.h>
 #ifndef USE_COND
 #include <semaphore.h>
@@ -12,6 +18,9 @@
 #define MAX_PASSENGERS 256
 #define MAX_CALLS      128
 
+// A one way wake-up between two threads: one waits, another posts.
+// Built on semaphores in sync_sem.c and on condition variables in
+// sync_cond.c, which gives two builds of the same program.
 #ifdef USE_COND
 typedef struct {
     pthread_mutex_t lock;
@@ -38,9 +47,9 @@ typedef struct {
     int start_floor[MAX_ELEVATORS], n_start;
     int arrival_min_ms, arrival_max_ms;
     int travel_ms, door_ms, board_ms, alight_ms;
-    int max_seconds, refresh_ms, plain;
+    int max_seconds, refresh_ms, plain;   // max_seconds 0 means no limit
     Strategy strategy;
-    unsigned seed;
+    unsigned seed;              // 0 means take it from the clock
     char log_path[256];
 } Config;
 
@@ -69,6 +78,9 @@ typedef struct {
     long appeared_ms, boarded_ms, done_ms;
 } Passenger;
 
+// A hall call: somebody pressed the up or down button on a floor.
+// Several passengers share one call, and there is never more than one
+// active call per floor and direction.
 typedef struct {
     int floor, elevator, active;
     Direction dir;
@@ -83,6 +95,8 @@ typedef struct {
     Signal work;
 } Elevator;
 
+// The whole world. Every field below is shared by all threads and may
+// only be touched while lock is held.
 typedef struct {
     Config cfg;
     pthread_mutex_t lock;
@@ -90,7 +104,8 @@ typedef struct {
     Passenger passengers[MAX_PASSENGERS];
     Call calls[MAX_CALLS];
     Signal new_call;
-    int n_passengers, delivered, refused_boardings, violations, running;
+    int n_passengers, delivered, boarded_count, refused_boardings;
+    int violations, running, draining;
     long total_wait, max_wait, total_ride;
 } Sim;
 
@@ -105,10 +120,13 @@ void sim_join(void);
 int  sim_running(void);
 int  sim_all_delivered(void);
 void sim_check(void);
+void sim_drain(void);
 
-int  out_open(const char *log_path);
+int  out_open(const char *log_path, int plain);
 int  out_log_fd(void);
 void out_close(void);
 void out_event(const char *fmt, ...);
+void out_draw(void);
+void out_stats(const char *reason);
 
 #endif

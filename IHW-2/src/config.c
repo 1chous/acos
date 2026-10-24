@@ -65,6 +65,9 @@ static int to_list(const char *s, int *dst, int max, int *count)
     return 0;
 }
 
+// Sets one option by name. The config file and the command line both go
+// through here, so they always understand the same set of keys. In a file
+// the keys use '_', on the command line '-'; both spellings work.
 static int set_option(Config *c, const char *raw, const char *val)
 {
     char key[24];
@@ -186,6 +189,8 @@ int config_parse_args(Config *c, int argc, char **argv)
 #define NEED(cond, ...) \
     do { if (!(cond)) { dprintf(2, "config: " __VA_ARGS__); return -1; } } while (0)
 
+// Checked before any thread starts: a bad value must stop the program,
+// not crash it later.
 int config_check(Config *c)
 {
     NEED(c->floors >= 2 && c->floors <= MAX_FLOORS, "floors must be 2..%d\n", MAX_FLOORS);
